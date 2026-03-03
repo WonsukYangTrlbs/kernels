@@ -1,13 +1,11 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <cuda_runtime.h>
+#include "common.cuh"
 
 
 __global__ void matmulKernel(float *A, float *B, float *C, int m, int k, int n);
 
 int main(void)
 {
-    int m = 4096, k = 4096, n = 4096;
+    int m = 8192, k = 8192, n = 8192;
     printf("[Matrix multiplication, C = AB]\n");
     printf("Size of Matrix A: %d x %d\n", m, k);
     printf("Size of Matrix B: %d x %d\n", k, n);

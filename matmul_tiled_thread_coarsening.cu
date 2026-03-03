@@ -1,8 +1,9 @@
 #include "common.cuh"
 
 #define TILE_SIZE 16
+#define COARSE_FACTOR 4
 
-__global__ void matmulKernelTiled(float *A, float *B, float *C, int m, int k, int n);
+__global__ void matmulKernelTiledThreadCoarsening(float *A, float *B, float *C, int m, int k, int n);
 
 int main(void)
 {
@@ -43,13 +44,13 @@ int main(void)
 
     const int BLOCK_SIZE = TILE_SIZE;
     dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
-    dim3 grid((m + BLOCK_SIZE - 1) / BLOCK_SIZE, (n + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    dim3 grid((n + TILE_SIZE * COARSE_FACTOR - 1) / (TILE_SIZE * COARSE_FACTOR), (m + TILE_SIZE - 1) / TILE_SIZE);
     printf("Launching kernel with %d blocks and %d threads per block\n", grid.x, dimBlock.x);
 
     cudaDeviceSynchronize();
     cudaEventRecord(start);
 
-    matmulKernelTiled<<<grid, dimBlock>>>(d_A, d_B, d_C, m, k, n);
+    matmulKernelTiledThreadCoarsening<<<grid, dimBlock>>>(d_A, d_B, d_C, m, k, n);
 
     cudaDeviceSynchronize();
     cudaEventRecord(stop);
@@ -72,34 +73,39 @@ int main(void)
     return 0;
 }
 
-__global__ void matmulKernelTiled(float *A, float *B, float *C, int m, int k, int n)
+__global__ void matmulKernelTiledThreadCoarsening(float *A, float *B, float *C, int m, int k, int n)
 {
     __shared__ float s_A[TILE_SIZE][TILE_SIZE];
     __shared__ float s_B[TILE_SIZE][TILE_SIZE];
 
-    int row = blockIdx.y * TILE_SIZE + threadIdx.y;
-    int col = blockIdx.x * TILE_SIZE + threadIdx.x;
+    int bx = blockIdx.x; int by = blockIdx.y;
+    int tx = threadIdx.x; int ty = threadIdx.y;
 
-    float sum = 0.0f;
-    int tiles = (k + TILE_SIZE - 1) / TILE_SIZE;
-    for (int t = 0; t < tiles; t++)
-    {
-        int colA = t * TILE_SIZE + threadIdx.x;
-        int rowB = t * TILE_SIZE + threadIdx.y;
-        if (row < m && colA < k)
-            s_A[threadIdx.y][threadIdx.x] = A[row * k + colA];
-        else
-            s_A[threadIdx.y][threadIdx.x] = 0.0f;
-        if (rowB < k && col < n)
-            s_B[threadIdx.y][threadIdx.x] = B[rowB * n + col];
-        else
-            s_B[threadIdx.y][threadIdx.x] = 0.0f;
-        __syncthreads();
+    int row = by * TILE_SIZE + ty;
+    int colStart = bx * TILE_SIZE * COARSE_FACTOR + tx;
 
-        for (int j = 0; j < TILE_SIZE; j++)
-            sum += s_A[threadIdx.y][j] * s_B[j][threadIdx.x];
-        __syncthreads();
+    float Cvalue[COARSE_FACTOR];
+    for (int c = 0; c < COARSE_FACTOR; ++c) {
+        Cvalue[c] = 0.0f;
     }
-    if (row < m && col < n)
-        C[row * n + col] = sum;
+
+    for (int ph = 0; ph < k / TILE_SIZE; ++ph) {
+        s_A[ty][tx] = A[row * k + ph * TILE_SIZE + tx];
+
+        for (int c = 0; c < COARSE_FACTOR; ++c) {
+            int col = colStart + c * TILE_SIZE;
+            s_B[ty][tx] = B[(ph * TILE_SIZE + ty) * n + col];
+            __syncthreads();
+
+            for (int l = 0; l < TILE_SIZE; ++l) {
+                Cvalue[c] += s_A[ty][l] * s_B[l][tx];
+            }
+            __syncthreads();
+        }
+    }
+
+    for (int c = 0; c < COARSE_FACTOR; ++c) {
+        int col = colStart + c * TILE_SIZE;
+        C[row * n + col] = Cvalue[c];
+    }
 }
